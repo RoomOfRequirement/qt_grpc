@@ -1,0 +1,15 @@
+syntax = 'proto3';
+
+package echoIP;
+
+service Echo {
+    rpc receive(Request) returns (Reply) {}
+}
+
+message Request {
+    string name = 1;
+}
+
+message Reply {
+    string msg = 1;
+}
