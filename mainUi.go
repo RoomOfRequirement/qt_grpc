@@ -3,14 +3,19 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/fullstorydev/grpcurl"
+	descpb "github.com/golang/protobuf/protoc-gen-go/descriptor"
+	"github.com/jhump/protoreflect/desc"
+	"github.com/jhump/protoreflect/grpcreflect"
+	"github.com/therecipe/qt/core"
 	"github.com/therecipe/qt/widgets"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"regexp"
 	"strings"
 	"time"
 	"unsafe"
 
-	pb "./proto"
 	rpb "google.golang.org/grpc/reflection/grpc_reflection_v1alpha"
 	"log"
 	"os"
@@ -31,7 +36,7 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	mainWindow.QWidget = widgets.NewQWidget(nil, 0)
 	mainWindow.SetMinimumHeight(800)
 	mainWindow.SetMinimumWidth(600)
-	mainWindow.SetWindowTitle("Test GRPC")
+	mainWindow.SetWindowTitle("GRPC Descriptor")
 
 	mainWindow.addressGroup = widgets.NewQGroupBox2("address", nil)
 	mainWindow.reqGroup = widgets.NewQGroupBox2("request", nil)
@@ -49,12 +54,12 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	respText := widgets.NewQTextEdit2("respText", nil)
 	respListGroup := widgets.NewQGroupBox2("list", nil)
 	respList := widgets.NewQListWidget(nil)
-	respListSelectButton := widgets.NewQPushButton2("selete", nil)
-	respListSelectionOutput := widgets.NewQTextEdit2("", nil)
+	respListOp := widgets.NewQListWidget(nil)
+	respListOpOp := widgets.NewQListWidget(nil)
 	respListGroupLayout := widgets.NewQGridLayout2()
 	respListGroupLayout.AddWidget(respList, 0, 1, 0)
-	respListGroupLayout.AddWidget(respListSelectButton, 1, 1, 0)
-	respListGroupLayout.AddWidget(respListSelectionOutput, 2, 1, 0)
+	respListGroupLayout.AddWidget(respListOp, 1, 1, 0)
+	respListGroupLayout.AddWidget(respListOpOp, 2, 1, 0)
 	respListGroup.SetLayout(respListGroupLayout)
 
 	respLayout := widgets.NewQGridLayout2()
@@ -63,13 +68,11 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	mainWindow.respGroup.SetLayout(respLayout)
 
 	// reqGroup
+	describeButton := widgets.NewQPushButton2("describeServer", nil)
 	listServicesButton := widgets.NewQPushButton2("listServices", nil)
-	echoButton := widgets.NewQPushButton2("echo", nil)
-	testButton := widgets.NewQPushButton2("proto", nil)
 	reqLayout := widgets.NewQGridLayout2()
-	reqLayout.AddWidget(listServicesButton, 0, 0, 0)
-	reqLayout.AddWidget(echoButton, 0, 1, 0)
-	reqLayout.AddWidget(testButton, 0, 2, 0)
+	reqLayout.AddWidget(describeButton, 0, 0, 0)
+	reqLayout.AddWidget(listServicesButton, 1, 0, 0)
 	mainWindow.reqGroup.SetLayout(reqLayout)
 
 	// mainWindow layout
@@ -81,12 +84,15 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	mainWindow.SetLayout(&grid)
 
 	// button clicked function
+	describeButton.ConnectClicked(func(checked bool) {
+		resp := describe(addressLineEdit.Text())
+		respText.SetText(resp)
+	})
+
 	listServicesButton.ConnectClicked(func(checked bool) {
-		log.Println("listServices clicked")
-		resp := listServices(connect(addressLineEdit.Text()))
+		resp := listServices(addressLineEdit.Text())
 		respText.SetText(resp)
 		s := strings.Split(resp, "\n")
-		log.Println(s)
 		respList.Clear()
 		for _, i := range s {
 			newListItem := widgets.NewQListWidgetItem2(i, nil, 0)
@@ -94,117 +100,202 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 		}
 	})
 
-	echoButton.ConnectClicked(func(checked bool) {
-		log.Println("echo clicked")
-		ping(respText, addressLineEdit.Text())
-	})
-
-	testButton.ConnectClicked(func(checked bool) {
-		log.Println("test clicked")
-		resp := protoFileDetails(connect(addressLineEdit.Text()))
-		log.Println(resp)
-		respText.SetText(resp)
-	})
-
-	respListSelectButton.ConnectClicked(func(checked bool) {
-		respListSelectionOutput.Clear()
-		log.Println("select clicked")
-		s := ""
-		for _, item := range respList.SelectedItems() {
-			s += item.Text()
+	respList.ConnectClicked(func(index *core.QModelIndex) {
+		// log.Println(index.Row())
+		svc := respList.SelectedItems()[0].Text()
+		resp := listMethods(addressLineEdit.Text(), svc)
+		s := strings.Split(resp, "\n")
+		respListOp.Clear()
+		for _, i := range s {
+			newListItem := widgets.NewQListWidgetItem2(i, nil, 0)
+			respListOp.AddItem2(newListItem)
 		}
-		respListSelectionOutput.SetText(s)
+	})
+
+	respListOp.ConnectClicked(func(index *core.QModelIndex) {
+		// log.Println(index.Row())
+		method := respListOp.SelectedItems()[0].Text()
+		resp := methodDetails(addressLineEdit.Text(), method)
+		s := strings.Split(resp, "\n")
+		respListOpOp.Clear()
+		for _, i := range s {
+			newListItem := widgets.NewQListWidgetItem2(i, nil, 0)
+			respListOpOp.AddItem2(newListItem)
+		}
 	})
 
 	return
-}
-
-func check(err error) {
-	if err != nil {
-		panic(err)
-	}
-}
-
-func connect(address string) *grpc.ClientConn {
-	conn, err := grpc.Dial(address, grpc.WithInsecure())
-	check(err)
-	return conn
-}
-
-func client(address string) *pb.EchoClient {
-	if match, _ := regexp.MatchString(":", address); match == false {
-		log.Fatalln("invalid address")
-	}
-
-	conn := connect(address)
-
-	client := pb.NewEchoClient(conn)
-	return &client
-}
-
-func listServices(conn *grpc.ClientConn) string {
-	rc := rpb.NewServerReflectionClient(conn)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	r, _ := rc.ServerReflectionInfo(ctx)
-	req := &rpb.ServerReflectionRequest{MessageRequest: &rpb.ServerReflectionRequest_ListServices{ListServices: "*"}}
-	err := r.Send(req)
-	if err == nil {
-		resp, err := r.Recv()
-		if err == nil {
-			reg, _ := regexp.Compile("\"([^\"]*)\"")
-			res := reg.FindAllString(fmt.Sprint(resp.MessageResponse), -1)
-			return fmt.Sprint(strings.ReplaceAll(strings.Join(res, "\n"), "\"", ""))
-			// return fmt.Sprint(resp.GetListServicesResponse())
-		}
-	}
-	return fmt.Sprint(err)
 }
 
 func String(b []byte) string {
 	return *(*string)(unsafe.Pointer(&b))
 }
 
-func protoFileDetails(conn *grpc.ClientConn) string {
-	rc := rpb.NewServerReflectionClient(conn)
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-
-	r, _ := rc.ServerReflectionInfo(ctx)
-	req := &rpb.ServerReflectionRequest{MessageRequest: &rpb.ServerReflectionRequest_FileByFilename{FileByFilename: "echoIP.proto"}}
-	err := r.Send(req)
-	if err == nil {
-		resp, err := r.Recv()
-		if err == nil {
-			// log.Println(resp.MessageResponse)
-			// log.Println(resp.XXX_OneofFuncs())
-			return fmt.Sprint(resp.MessageResponse)
-			// res := resp.GetFileDescriptorResponse().GetFileDescriptorProto()
-			// log.Println(res)
-			// return fmt.Sprint(String(res[0]))
-		}
+func dial(ctx context.Context, address string) (*grpc.ClientConn, context.Context) {
+	var creds credentials.TransportCredentials
+	cc, err := grpcurl.BlockingDial(ctx, "tcp", address, creds)
+	if err != nil {
+		log.Printf("Failed to dial target.host %q\n", address)
+		log.Fatalln(err.Error())
 	}
-	return fmt.Sprint(err)
+	return cc, ctx
 }
 
-func ping(label *widgets.QTextEdit, address string) {
-	log.Println("ping started")
-	defer log.Println("ping exited")
+func client(ctx context.Context, address string) (*grpcreflect.Client, context.Context) {
+	cc, ctx := dial(ctx, address)
+	refClient := grpcreflect.NewClient(ctx, rpb.NewServerReflectionClient(cc))
+	return refClient, ctx
+}
 
-	client := *client(address)
+func descSource(address string) (grpcurl.DescriptorSource, context.CancelFunc) {
+	dialTime := 10 * time.Second
+	ctx, cancel := context.WithTimeout(context.Background(), dialTime)
+	// defer cancel()
+	refClient, ctx := client(ctx, address)
+	descSource := grpcurl.DescriptorSourceFromServer(ctx, refClient)
+	return descSource, cancel
+}
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+func parseReq(symbols []string, ds grpcurl.DescriptorSource) string {
+	res := ""
+	for _, s := range symbols {
+		if s[0] == '.' {
+			s = s[1:]
+		}
+
+		dsc, err := ds.FindSymbol(s)
+		if err != nil {
+			return fmt.Sprintf("Failed to resolve symbol %q due to %s\n", s, err.Error())
+		}
+
+		fqn := dsc.GetFullyQualifiedName()
+		var elementType string
+		switch d := dsc.(type) {
+		case *desc.MessageDescriptor:
+			elementType = "a message"
+			parent, ok := d.GetParent().(*desc.MessageDescriptor)
+			if ok {
+				if d.IsMapEntry() {
+					for _, f := range parent.GetFields() {
+						if f.IsMap() && f.GetMessageType() == d {
+							// found it: describe the map field instead
+							elementType = "the entry type for a map field"
+							dsc = f
+							break
+						}
+					}
+				} else {
+					// see if it's a group
+					for _, f := range parent.GetFields() {
+						if f.GetType() == descpb.FieldDescriptorProto_TYPE_GROUP && f.GetMessageType() == d {
+							// found it: describe the map field instead
+							elementType = "the type of a group field"
+							dsc = f
+							break
+						}
+					}
+				}
+			}
+		case *desc.FieldDescriptor:
+			elementType = "a field"
+			if d.GetType() == descpb.FieldDescriptorProto_TYPE_GROUP {
+				elementType = "a group field"
+			} else if d.IsExtension() {
+				elementType = "an extension"
+			}
+		case *desc.OneOfDescriptor:
+			elementType = "a one-of"
+		case *desc.EnumDescriptor:
+			elementType = "an enum"
+		case *desc.EnumValueDescriptor:
+			elementType = "an enum value"
+		case *desc.ServiceDescriptor:
+			elementType = "a service"
+		case *desc.MethodDescriptor:
+			elementType = "a method"
+		default:
+			err = fmt.Errorf("descriptor has unrecognized type %T", dsc)
+			return fmt.Sprintf("Failed to describe symbol %q due to %s\n", s, err.Error())
+		}
+
+		txt, err := grpcurl.GetDescriptorText(dsc, ds)
+		if err != nil {
+			return fmt.Sprintf("Failed to describe symbol %q due to %s\n", s, err.Error())
+		}
+
+		res += fmt.Sprintf("%s is %s:\n", fqn, elementType) + fmt.Sprintln(txt) + "\n"
+	}
+	return res
+}
+
+func describe(address string) string {
+	ds, cancel := descSource(address)
 	defer cancel()
+	svcs, err := grpcurl.ListServices(ds)
+	if err != nil {
+		return fmt.Sprintf("Failed to list services due to:\n %s\n", err.Error())
+	}
+	if len(svcs) == 0 {
+		return fmt.Sprint("Server returned an empty list of exposed services\n")
+	}
+	symbols := svcs
+	res := parseReq(symbols, ds)
+	return res
+}
 
-	req := pb.Request{Name: "test"}
+func listServices(address string) string {
+	ds, cancel := descSource(address)
+	defer cancel()
+	svcs, err := grpcurl.ListServices(ds)
+	if err != nil {
+		return fmt.Sprintf("Failed to list services due to:\n %s\n", err.Error())
+	}
+	if len(svcs) == 0 {
+		return fmt.Sprint("No services\n")
+	} else {
+		res := ""
+		for _, svc := range svcs {
+			res += svc + "\n"
+		}
+		return res
+	}
+}
 
-	resp, err := client.Receive(ctx, &req)
-	check(err)
-	log.Println(resp)
-	label.SetText(fmt.Sprintf("Response: %v", resp.Msg))
+func listMethods(address, serviceName string) string {
+	ds, cancel := descSource(address)
+	defer cancel()
+	methods, err := grpcurl.ListMethods(ds, serviceName)
+	if err != nil {
+		return fmt.Sprintf("Failed to list methods due to:\n %s\n", err.Error())
+	}
+	if len(methods) == 0 {
+		return fmt.Sprint("No methods\n") // probably unlikely
+	} else {
+		res := ""
+		for _, method := range methods {
+			res += method + "\n"
+		}
+		return res
+	}
+}
+
+func methodDetails(address, methodName string) string {
+	ds, cancel := descSource(address)
+	defer cancel()
+	symbols := []string{methodName}
+	res := parseReq(symbols, ds) + "\n"
+	reg := regexp.MustCompile(`\( \.(.*?) \)`)
+	msgs := reg.FindAllStringSubmatch(res, -1)
+	// log.Println(msgs)
+	if len(msgs) != 0 {
+		var tmp []string
+		for _, msg := range msgs {
+			// log.Println(msg[1])
+			tmp = append(tmp, msg[1])
+		}
+		res += parseReq(tmp, ds)
+	}
+	return res
 }
 
 func main() {
