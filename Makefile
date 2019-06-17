@@ -29,4 +29,5 @@ ui-mem:
 	go tool pprof -http=:8080 mem.prof
 
 build:
-	go build -o qt_grpc mainUI.go
+	go build -o qt_grpc mainUi.go
+	chmod +x qt_grpc
