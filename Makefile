@@ -31,3 +31,7 @@ ui-mem:
 build:
 	go build -o qt_grpc mainUi.go
 	chmod +x qt_grpc
+
+gen_key:
+	openssl req -newkey rsa:2048 -nodes -subj '/O=ASTRI/C=CN/OU=MSA/CN=localhost' \
+	-keyout server/secret/server.key -x509 -days 365 -out server/secret/server.crt

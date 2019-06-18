@@ -59,8 +59,8 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	plainTextButton.SetCheckedDefault(true)
 	tlsButton := widgets.NewQRadioButton2("TLS", nil)
 	serverLabel := widgets.NewQLabel2("server name", nil, 0)
-	publicKeyLabel := widgets.NewQLabel2("public key", nil, 0)
-	privateKeyLabel := widgets.NewQLabel2("public key", nil, 0)
+	publicKeyLabel := widgets.NewQLabel2("public crt file path", nil, 0)
+	privateKeyLabel := widgets.NewQLabel2("private key file path", nil, 0)
 	serverName := widgets.NewQLineEdit2("", nil)
 	serverName.SetDisabledDefault(true)
 	publicKey := widgets.NewQLineEdit2("*", nil)
@@ -83,7 +83,7 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	respListGroup := widgets.NewQGroupBox2("list", nil)
 	respList := widgets.NewQListWidget(nil)
 	respListOp := widgets.NewQListWidget(nil)
-	respListOpOp := widgets.NewQListWidget(nil)
+	respListOpOp := widgets.NewQTextEdit2("", nil)
 	respListGroupLayout := widgets.NewQGridLayout2()
 	respListGroupLayout.AddWidget(respList, 0, 1, 0)
 	respListGroupLayout.AddWidget(respListOp, 1, 1, 0)
@@ -155,7 +155,7 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 		respText.SetText(resp)
 		s := strings.Split(resp, "\n")
 		respList.Clear()
-		for _, i := range s {
+		for _, i := range s[:len(s)-1] {
 			newListItem := widgets.NewQListWidgetItem2(i, nil, 0)
 			respList.AddItem2(newListItem)
 		}
@@ -167,7 +167,7 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 		resp := listMethods(addressLineEdit.Text(), svc, plainTextButton.IsChecked(), serverName.Text(), &CA{false, "", publicKey.Text(), privateKey.Text()})
 		s := strings.Split(resp, "\n")
 		respListOp.Clear()
-		for _, i := range s {
+		for _, i := range s[:len(s)-1] {
 			newListItem := widgets.NewQListWidgetItem2(i, nil, 0)
 			respListOp.AddItem2(newListItem)
 		}
@@ -177,18 +177,13 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 		// log.Println(index.Row())
 		method := respListOp.SelectedItems()[0].Text()
 		resp := methodDetails(addressLineEdit.Text(), method, plainTextButton.IsChecked(), serverName.Text(), &CA{false, "", publicKey.Text(), privateKey.Text()})
-		s := strings.Split(resp, "\n")
-		respListOpOp.Clear()
-		for _, i := range s {
-			newListItem := widgets.NewQListWidgetItem2(i, nil, 0)
-			respListOpOp.AddItem2(newListItem)
-		}
+		respListOpOp.SetText(resp)
 	})
 
 	sendButton.ConnectClicked(func(checked bool) {
 		methodName := methodName.Text()
 		if methodName != "" {
-			res := invoke(addressLineEdit.Text(), plainTextButton.IsChecked(), serverName.Text(), &CA{false, "", publicKey.Text(), privateKey.Text()}, methodName, sendText.ToPlainText())
+			res := invoke(addressLineEdit.Text(), plainTextButton.IsChecked(), serverName.Text(), &CA{false, publicKey.Text(), "", privateKey.Text()}, methodName, sendText.ToPlainText())
 			respText.SetText(res)
 		} else {
 			return
@@ -208,45 +203,43 @@ type CA struct {
 	pubKey, privKey string
 }
 
-func generateCreds(plainText bool, serverName string, ca *CA) (creds credentials.TransportCredentials) {
+func generateCreds(plainText bool, serverName string, ca *CA) (creds credentials.TransportCredentials, err error) {
 	if !plainText {
-		var err error
 		creds, err = grpcurl.ClientTransportCredentials(ca.insecure, ca.cacert, ca.pubKey, ca.privKey)
 		if err != nil {
-			log.Fatalf("Failed to configure transport credentials due to: %s\n", err.Error())
+			return creds, fmt.Errorf("Failed to configure transport credentials due to: %s\n", err.Error())
 		}
 		if serverName != "" {
 			if err := creds.OverrideServerName(serverName); err != nil {
-				log.Fatalf("Failed to override server name as %q due to: %s\n", serverName, err.Error())
+				return creds, fmt.Errorf("Failed to override server name as %q due to: %s\n", serverName, err.Error())
 			}
 		}
 	}
 	return
 }
 
-func dial(ctx context.Context, address string, creds credentials.TransportCredentials) (*grpc.ClientConn, context.Context) {
+func dial(ctx context.Context, address string, creds credentials.TransportCredentials) (*grpc.ClientConn, context.Context, error) {
 	cc, err := grpcurl.BlockingDial(ctx, "tcp", address, creds)
 	if err != nil {
-		log.Printf("Failed to dial target.host %q\n", address)
-		log.Fatalln(err.Error())
+		err = fmt.Errorf("Failed to dial target.host %q\n%s\n", address, err.Error())
 	}
-	return cc, ctx
+	return cc, ctx, err
 }
 
-func client(ctx context.Context, address string, plainText bool, serverName string, ca *CA) (*grpcreflect.Client, context.Context) {
-	creds := generateCreds(plainText, serverName, ca)
-	cc, ctx := dial(ctx, address, creds)
+func client(ctx context.Context, address string, plainText bool, serverName string, ca *CA) (*grpcreflect.Client, context.Context, error) {
+	creds, err := generateCreds(plainText, serverName, ca)
+	cc, ctx, err := dial(ctx, address, creds)
 	refClient := grpcreflect.NewClient(ctx, rpb.NewServerReflectionClient(cc))
-	return refClient, ctx
+	return refClient, ctx, err
 }
 
-func descSource(address string, plainText bool, serverName string, ca *CA) (grpcurl.DescriptorSource, context.CancelFunc) {
+func descSource(address string, plainText bool, serverName string, ca *CA) (grpcurl.DescriptorSource, context.CancelFunc, error) {
 	dialTime := 10 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), dialTime)
 	// defer cancel()
-	refClient, ctx := client(ctx, address, plainText, serverName, ca)
+	refClient, ctx, err := client(ctx, address, plainText, serverName, ca)
 	descSource := grpcurl.DescriptorSourceFromServer(ctx, refClient)
-	return descSource, cancel
+	return descSource, cancel, err
 }
 
 func parseReq(symbols []string, ds grpcurl.DescriptorSource) string {
@@ -352,14 +345,20 @@ func invoke(address string, plainText bool, serverName string, ca *CA, methodNam
 	dialTime := 10 * time.Second
 	ctx, cancel := context.WithTimeout(context.Background(), dialTime)
 	defer cancel()
-	creds := generateCreds(plainText, serverName, ca)
-	cc, ctx := dial(ctx, address, creds)
+	creds, err := generateCreds(plainText, serverName, ca)
+	if err != nil {
+		return err.Error()
+	}
+	cc, ctx, err := dial(ctx, address, creds)
+	if err != nil {
+		return err.Error()
+	}
 	refClient := grpcreflect.NewClient(ctx, rpb.NewServerReflectionClient(cc))
 	descSource := grpcurl.DescriptorSourceFromServer(ctx, refClient)
 
 	rf, formatter, err := grpcurl.RequestParserAndFormatterFor(grpcurl.Format("json"), descSource, true, true, strings.NewReader(msg))
 	if err != nil {
-		log.Fatalln("Failed to construct request parser and formatter for json due to:\n", err.Error())
+		return fmt.Sprintf("Failed to construct request parser and formatter for json due to: %s\n", err.Error())
 	}
 	done := capture()
 	h := grpcurl.NewDefaultEventHandler(os.Stdout, descSource, formatter, false)
@@ -381,7 +380,10 @@ func invoke(address string, plainText bool, serverName string, ca *CA, methodNam
 }
 
 func describe(address string, plainText bool, serverName string, ca *CA) string {
-	ds, cancel := descSource(address, plainText, serverName, ca)
+	ds, cancel, err := descSource(address, plainText, serverName, ca)
+	if err != nil {
+		return err.Error()
+	}
 	defer cancel()
 	svcs, err := grpcurl.ListServices(ds)
 	if err != nil {
@@ -396,7 +398,10 @@ func describe(address string, plainText bool, serverName string, ca *CA) string 
 }
 
 func listServices(address string, plainText bool, serverName string, ca *CA) string {
-	ds, cancel := descSource(address, plainText, serverName, ca)
+	ds, cancel, err := descSource(address, plainText, serverName, ca)
+	if err != nil {
+		return err.Error()
+	}
 	defer cancel()
 	svcs, err := grpcurl.ListServices(ds)
 	if err != nil {
@@ -414,7 +419,10 @@ func listServices(address string, plainText bool, serverName string, ca *CA) str
 }
 
 func listMethods(address, serviceName string, plainText bool, serverName string, ca *CA) string {
-	ds, cancel := descSource(address, plainText, serverName, ca)
+	ds, cancel, err := descSource(address, plainText, serverName, ca)
+	if err != nil {
+		return err.Error()
+	}
 	defer cancel()
 	methods, err := grpcurl.ListMethods(ds, serviceName)
 	if err != nil {
@@ -432,7 +440,10 @@ func listMethods(address, serviceName string, plainText bool, serverName string,
 }
 
 func methodDetails(address, methodName string, plainText bool, serverName string, ca *CA) string {
-	ds, cancel := descSource(address, plainText, serverName, ca)
+	ds, cancel, err := descSource(address, plainText, serverName, ca)
+	if err != nil {
+		return err.Error()
+	}
 	defer cancel()
 	symbols := []string{methodName}
 	res := parseReq(symbols, ds) + "\n"
