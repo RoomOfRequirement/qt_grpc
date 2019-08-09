@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"github.com/bojand/ghz/printer"
+	"github.com/bojand/ghz/runner"
 	"github.com/fullstorydev/grpcurl"
 	descpb "github.com/golang/protobuf/protoc-gen-go/descriptor"
 	"github.com/jhump/protoreflect/desc"
@@ -14,6 +16,8 @@ import (
 	"google.golang.org/grpc/credentials"
 	"io"
 	"regexp"
+	"runtime"
+	"strconv"
 	"strings"
 	"time"
 	"unsafe"
@@ -98,10 +102,23 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	// reqGroup
 	describeButton := widgets.NewQPushButton2("describeServer", nil)
 	listServicesButton := widgets.NewQPushButton2("listServices", nil)
+	loadTestBox := widgets.NewQCheckBox2("loadingTest", nil)
+	loadTestBox.SetCheckedDefault(false)
 	sendCheckBox := widgets.NewQCheckBox2("message", nil)
 	sendCheckBox.SetCheckedDefault(false)
+	testStartButton := widgets.NewQPushButton2("start", nil)
+	testStartButton.SetDisabled(true)
 	sendText := widgets.NewQTextEdit2("message in json", nil)
 	sendText.SetDisabledDefault(true)
+	totalTestRequestsLabel := widgets.NewQLabel2("total requests", nil, 0)
+	totalTestRequests := widgets.NewQLineEdit2("500", nil)
+	totalTestRequests.SetDisabledDefault(true)
+	concurrencyLabel := widgets.NewQLabel2("concurrency", nil, 0)
+	concurrency := widgets.NewQLineEdit2("20", nil)
+	concurrency.SetDisabledDefault(true)
+	maxDurationLabel := widgets.NewQLabel2("max duration", nil, 0)
+	maxDuration := widgets.NewQLineEdit2("5", nil)
+	maxDuration.SetDisabledDefault(true)
 	methodNameLabel := widgets.NewQLabel2("methodName", nil, 0)
 	methodName := widgets.NewQLineEdit2("service.method", nil)
 	methodName.SetDisabledDefault(true)
@@ -110,11 +127,19 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	reqLayout := widgets.NewQGridLayout2()
 	reqLayout.AddWidget(describeButton, 0, 0, 0)
 	reqLayout.AddWidget(listServicesButton, 0, 1, 1)
+	reqLayout.AddWidget(loadTestBox, 0, 2, 2)
+	reqLayout.AddWidget(testStartButton, 0, 3, 0)
 	reqLayout.AddWidget(sendCheckBox, 1, 0, 0)
 	reqLayout.AddWidget(sendText, 1, 1, 0)
+	reqLayout.AddWidget(totalTestRequestsLabel, 1, 2, 0)
+	reqLayout.AddWidget(totalTestRequests, 1, 3, 0)
 	reqLayout.AddWidget(methodNameLabel, 2, 0, 0)
 	reqLayout.AddWidget(methodName, 2, 1, 0)
+	reqLayout.AddWidget(concurrencyLabel, 2, 2, 0)
+	reqLayout.AddWidget(concurrency, 2, 3, 0)
 	reqLayout.AddWidget(sendButton, 3, 1, 0)
+	reqLayout.AddWidget(maxDurationLabel, 3, 2, 0)
+	reqLayout.AddWidget(maxDuration, 3, 3, 0)
 	mainWindow.reqGroup.SetLayout(reqLayout)
 
 	// mainWindow layout
@@ -161,8 +186,14 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 		}
 	})
 
+	loadTestBox.ConnectClicked(func(checked bool) {
+		totalTestRequests.SetDisabled(!loadTestBox.IsChecked())
+		concurrency.SetDisabled(!loadTestBox.IsChecked())
+		maxDuration.SetDisabled(!loadTestBox.IsChecked())
+		testStartButton.SetDisabled(!loadTestBox.IsChecked())
+	})
+
 	respList.ConnectClicked(func(index *core.QModelIndex) {
-		// log.Println(index.Row())
 		svc := respList.SelectedItems()[0].Text()
 		resp := listMethods(addressLineEdit.Text(), svc, plainTextButton.IsChecked(), serverName.Text(), &CA{false, "", publicKey.Text(), privateKey.Text()})
 		s := strings.Split(resp, "\n")
@@ -174,7 +205,6 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 	})
 
 	respListOp.ConnectClicked(func(index *core.QModelIndex) {
-		// log.Println(index.Row())
 		method := respListOp.SelectedItems()[0].Text()
 		resp := methodDetails(addressLineEdit.Text(), method, plainTextButton.IsChecked(), serverName.Text(), &CA{false, "", publicKey.Text(), privateKey.Text()})
 		respListOpOp.SetText(resp)
@@ -185,6 +215,111 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 		if methodName != "" {
 			res := invoke(addressLineEdit.Text(), plainTextButton.IsChecked(), serverName.Text(), &CA{false, publicKey.Text(), "", privateKey.Text()}, methodName, sendText.ToPlainText())
 			respText.SetText(res)
+		} else {
+			return
+		}
+	})
+
+	testStartButton.ConnectClicked(func(checked bool) {
+		methodName := methodName.Text()
+		if methodName != "" {
+			// concurrency
+			cc, err := strconv.ParseUint(concurrency.Text(), 10, 32)
+			if err != nil {
+				respText.SetText(err.Error())
+				return
+			}
+			// total requests
+			ttr, err := strconv.ParseUint(totalTestRequests.Text(), 10, 32)
+			if err != nil {
+				respText.SetText(err.Error())
+				return
+			}
+
+			// max duration
+			md, err := strconv.ParseUint(maxDuration.Text(), 10, 32)
+			if err != nil {
+				respText.SetText(err.Error())
+				return
+			}
+
+			// cpu
+			nCPU := runtime.GOMAXPROCS(-1)
+
+			/*
+				// set up all the options
+				// https://github.com/bojand/ghz/blob/master/cmd/ghz/main.go
+				// https://github.com/bojand/ghz/blob/master/runner/options.go
+				options := make([]runner.Option, 0, 15)
+
+				options = append(options,
+
+					// runner.WithProtoFile(cfg.Proto, cfg.ImportPaths),
+					// runner.WithProtoset(cfg.Protoset),
+					// runner.WithRootCertificate(cfg.RootCert),
+					// runner.WithCertificate(cfg.Cert, cfg.Key),
+					// runner.WithServerNameOverride(cfg.CName),
+					// runner.WithSkipTLSVerify(cfg.SkipTLSVerify),
+					runner.WithInsecure(true),
+					// runner.WithAuthority(cfg.Authority),
+					runner.WithConcurrency(uint(cc)),
+					runner.WithTotalRequests(uint(ttr)),
+					// runner.WithQPS(cfg.QPS),
+					runner.WithTimeout(20*time.Second),
+					runner.WithRunDuration(time.Duration(uint(md))*time.Second),
+					runner.WithDialTimeout(10*time.Second),
+					// runner.WithKeepalive(time.Duration(cfg.KeepaliveTime)),
+					// runner.WithName(cfg.Name),
+					runner.WithCPUs(uint(nCPU)),
+					// runner.WithMetadata(cfg.Metadata),
+					// runner.WithTags(cfg.Tags),
+					// runner.WithStreamInterval(time.Duration(cfg.SI)),
+					// runner.WithReflectionMetadata(cfg.ReflectMetadata),
+					runner.WithConnections(1),
+				)
+			*/
+
+			report, err := runner.Run(
+				methodName,
+				addressLineEdit.Text(),
+				runner.WithInsecure(true),
+				runner.WithConcurrency(uint(cc)),
+				runner.WithTotalRequests(uint(ttr)),
+				runner.WithTimeout(20*time.Second),
+				runner.WithRunDuration(time.Duration(uint(md))*time.Second),
+				runner.WithDialTimeout(10*time.Second),
+				runner.WithCPUs(uint(nCPU)),
+				runner.WithConnections(1),
+				runner.WithDataFromJSON(sendText.ToPlainText()))
+
+			if err != nil {
+				//panic(err)
+				respText.SetText(err.Error())
+				return
+			}
+
+			done := capture()
+
+			p := printer.ReportPrinter{
+				Report: report,
+				Out:    os.Stdout,
+			}
+
+			err = p.Print("summary")
+
+			if err != nil {
+				if errString := err.Error(); errString != "" {
+					respText.SetText(errString)
+				}
+			}
+
+			str, err := done()
+			if err != nil {
+				respText.SetText(err.Error())
+				return
+			}
+			respText.SetText(str)
+
 		} else {
 			return
 		}

@@ -2,7 +2,9 @@
 
 ## Simple gRPC client with Qt
 
-main features are from cmd line tool [grpcurl](https://github.com/fullstorydev/grpcurl)
+main features are from cmd line tool [grpcurl](https://github.com/fullstorydev/grpcurl), MIT license
+
+and [ghz](https://github.com/bojand/ghz), Apache-2.0 license
 
 **reminder:**
 
