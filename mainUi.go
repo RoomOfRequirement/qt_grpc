@@ -318,8 +318,10 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 				respText.SetText(err.Error())
 				return
 			}
+			// this is a simple solution but not fit for large amount of requests (too many blank spaces...)
+			width := 4 * (2 << uint(len(totalTestRequests.Text())))
+			respText.SetTabStopWidth(width)
 			respText.SetText(str)
-
 		} else {
 			return
 		}
