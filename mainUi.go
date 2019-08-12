@@ -318,8 +318,28 @@ func NewMainWindow(app *widgets.QApplication) (mainWindow *MainWindow) {
 				respText.SetText(err.Error())
 				return
 			}
-			respText.SetText(str)
 
+			// need find a proper way to handle tab in QTextEdit widget
+			// https://github.com/bojand/ghz/blob/master/printer/printer.go#L306
+
+			// `respText.SetHtml()` with `p.Print("html")` looks good but need change its default template...
+
+			// use doc to display tabs and spaces
+			/*doc := gui.NewQTextDocument2(str, nil)
+			option := gui.NewQTextOption()
+			option.SetFlags(gui.QTextOption__ShowLineAndParagraphSeparators | gui.QTextOption__ShowTabsAndSpaces)
+			doc.SetDefaultTextOption(option)
+			respText.SetDocument(doc)
+			*/
+
+			// this is a simple solution but not fit for large amount of requests
+			// width := 4 * (2 << uint(len(totalTestRequests.Text())))
+			// respText.SetTabStopWidth(width)
+
+			// str = TabToSpace(str)  // not good
+			// fmt.Println(str)
+
+			respText.SetText(str)
 		} else {
 			return
 		}
@@ -595,6 +615,22 @@ func methodDetails(address, methodName string, plainText bool, serverName string
 	}
 	return res
 }
+
+/*
+func TabToSpace(input string) string {
+	var result []string
+
+	for _, i := range input {
+		switch {
+		case i == '\t':
+			result = append(result, "    ") // replace tab with 4 space
+		default:
+			result = append(result, string(i))
+		}
+	}
+	return strings.Join(result, "")
+}
+*/
 
 func main() {
 	app := widgets.NewQApplication(len(os.Args), os.Args)
